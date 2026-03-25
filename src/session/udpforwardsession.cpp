@@ -54,6 +54,11 @@ void UDPForwardSession::start() {
             SSL_set_session(ssl, session);
         }
     }
+    if (config.password.empty()) {
+        Log::log_with_endpoint(in_endpoint, "no password configured", Log::ERROR);
+        destroy();
+        return;
+    }
     out_write_buf = TrojanRequest::generate(config.password.cbegin()->first, config.target_addr, config.target_port, false);
     Log::log_with_endpoint(in_endpoint, "forwarding UDP packets to " + config.target_addr + ':' + to_string(config.target_port) + " via " + config.remote_addr + ':' + to_string(config.remote_port), Log::INFO);
     auto self = shared_from_this();
@@ -165,7 +170,9 @@ void UDPForwardSession::in_recv(const string &data) {
     timer_async_wait();
     string packet = UDPPacket::generate(config.target_addr, config.target_port, data);
     size_t length = data.length();
-    Log::log_with_endpoint(in_endpoint, "sent a UDP packet of length " + to_string(length) + " bytes to " + config.target_addr + ':' + to_string(config.target_port));
+    if (Log::level <= Log::ALL) {
+        Log::log_with_endpoint(in_endpoint, "sent a UDP packet of length " + to_string(length) + " bytes to " + config.target_addr + ':' + to_string(config.target_port));
+    }
     sent_len += length;
     if (status == FORWARD) {
         status = FORWARDING;
@@ -192,8 +199,10 @@ void UDPForwardSession::out_recv(const string &data) {
                 }
                 break;
             }
-            Log::log_with_endpoint(in_endpoint, "received a UDP packet of length " + to_string(packet.length) + " bytes from " + packet.address.address + ':' + to_string(packet.address.port));
-            udp_data_buf = udp_data_buf.substr(packet_len);
+            if (Log::level <= Log::ALL) {
+                Log::log_with_endpoint(in_endpoint, "received a UDP packet of length " + to_string(packet.length) + " bytes from " + packet.address.address + ':' + to_string(packet.address.port));
+            }
+            udp_data_buf.erase(0, packet_len);
             recv_len += packet.length;
             in_write(udp_recv_endpoint, packet.payload);
         }
@@ -222,10 +231,12 @@ void UDPForwardSession::destroy() {
     gc_timer.cancel();
     if (out_socket.next_layer().is_open()) {
         auto self = shared_from_this();
-        auto ssl_shutdown_cb = [this, self](const boost::system::error_code error) {
-            if (error == boost::asio::error::operation_aborted) {
+        auto shutdown_done = make_shared<bool>(false);
+        auto ssl_shutdown_cb = [this, self, shutdown_done](const boost::system::error_code error) {
+            if (error == boost::asio::error::operation_aborted || *shutdown_done) {
                 return;
             }
+            *shutdown_done = true;
             boost::system::error_code ec;
             ssl_shutdown_timer.cancel();
             out_socket.next_layer().cancel(ec);

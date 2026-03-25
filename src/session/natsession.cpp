@@ -102,6 +102,11 @@ void NATSession::start() {
         destroy();
         return;
     }
+    if (config.password.empty()) {
+        Log::log_with_endpoint(in_endpoint, "no password configured", Log::ERROR);
+        destroy();
+        return;
+    }
     out_write_buf = TrojanRequest::generate(config.password.cbegin()->first, target_addr, target_port, true);
     in_async_read();
     Log::log_with_endpoint(in_endpoint, "forwarding to " + target_addr + ':' + to_string(target_port) + " via " + config.remote_addr + ':' + to_string(config.remote_port), Log::INFO);
@@ -176,7 +181,18 @@ void NATSession::in_async_read() {
             destroy();
             return;
         }
-        in_recv(string((const char*)in_read_buf, length));
+        if (status == FORWARD) {
+            sent_len += length;
+            boost::asio::async_write(out_socket, boost::asio::buffer(in_read_buf, length), [this, self](const boost::system::error_code error, size_t) {
+                if (error) {
+                    destroy();
+                    return;
+                }
+                in_async_read();
+            });
+        } else {
+            in_recv(string((const char*)in_read_buf, length));
+        }
     });
 }
 
@@ -199,7 +215,18 @@ void NATSession::out_async_read() {
             destroy();
             return;
         }
-        out_recv(string((const char*)out_read_buf, length));
+        if (status == FORWARD) {
+            recv_len += length;
+            boost::asio::async_write(in_socket, boost::asio::buffer(out_read_buf, length), [this, self](const boost::system::error_code error, size_t) {
+                if (error) {
+                    destroy();
+                    return;
+                }
+                out_async_read();
+            });
+        } else {
+            out_recv(string((const char*)out_read_buf, length));
+        }
     });
 }
 
@@ -260,10 +287,12 @@ void NATSession::destroy() {
     }
     if (out_socket.next_layer().is_open()) {
         auto self = shared_from_this();
-        auto ssl_shutdown_cb = [this, self](const boost::system::error_code error) {
-            if (error == boost::asio::error::operation_aborted) {
+        auto shutdown_done = make_shared<bool>(false);
+        auto ssl_shutdown_cb = [this, self, shutdown_done](const boost::system::error_code error) {
+            if (error == boost::asio::error::operation_aborted || *shutdown_done) {
                 return;
             }
+            *shutdown_done = true;
             boost::system::error_code ec;
             ssl_shutdown_timer.cancel();
             out_socket.next_layer().cancel(ec);

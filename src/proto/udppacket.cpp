@@ -18,6 +18,7 @@
  */
 
 #include "udppacket.h"
+#include <stdexcept>
 using namespace std;
 using namespace boost::asio::ip;
 
@@ -40,7 +41,11 @@ bool UDPPacket::parse(const string &data, size_t &udp_packet_len) {
 }
 
 string UDPPacket::generate(const udp::endpoint &endpoint, const string &payload) {
+    if (payload.length() > 65535) {
+        throw runtime_error("UDP payload too long (max 65535 bytes)");
+    }
     string ret = SOCKS5Address::generate(endpoint);
+    ret.reserve(ret.length() + 2 + 2 + payload.length());
     ret += char(uint8_t(payload.length() >> 8));
     ret += char(uint8_t(payload.length() & 0xFF));
     ret += "\r\n";
@@ -49,7 +54,15 @@ string UDPPacket::generate(const udp::endpoint &endpoint, const string &payload)
 }
 
 string UDPPacket::generate(const string &domainname, uint16_t port, const string &payload) {
-    string ret = "\x03";
+    if (domainname.length() > 255) {
+        throw runtime_error("domain name too long (max 255 bytes)");
+    }
+    if (payload.length() > 65535) {
+        throw runtime_error("UDP payload too long (max 65535 bytes)");
+    }
+    string ret;
+    ret.reserve(1 + 1 + domainname.length() + 2 + 2 + 2 + payload.length());
+    ret += '\x03';
     ret += char(uint8_t(domainname.length()));
     ret += domainname;
     ret += char(uint8_t(port >> 8));

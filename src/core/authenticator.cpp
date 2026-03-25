@@ -50,7 +50,9 @@ bool Authenticator::auth(const string &password) {
     if (!is_valid_password(password)) {
         return false;
     }
-    if (mysql_query(&con, ("SELECT quota, download + upload FROM users WHERE password = '" + password + '\'').c_str())) {
+    char escaped[PASSWORD_LENGTH * 2 + 1];
+    mysql_real_escape_string(&con, escaped, password.c_str(), password.length());
+    if (mysql_query(&con, (string("SELECT quota, download + upload FROM users WHERE password = '") + escaped + '\'').c_str())) {
         Log::log_with_date_time(mysql_error(&con), Log::ERROR);
         return false;
     }
@@ -81,7 +83,9 @@ void Authenticator::record(const string &password, uint64_t download, uint64_t u
     if (!is_valid_password(password)) {
         return;
     }
-    if (mysql_query(&con, ("UPDATE users SET download = download + " + to_string(download) + ", upload = upload + " + to_string(upload) + " WHERE password = '" + password + '\'').c_str())) {
+    char escaped[PASSWORD_LENGTH * 2 + 1];
+    mysql_real_escape_string(&con, escaped, password.c_str(), password.length());
+    if (mysql_query(&con, (string("UPDATE users SET download = download + ") + to_string(download) + ", upload = upload + " + to_string(upload) + " WHERE password = '" + escaped + '\'').c_str())) {
         Log::log_with_date_time(mysql_error(&con), Log::ERROR);
     }
 }

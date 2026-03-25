@@ -49,7 +49,7 @@ void ServerSession::start() {
     in_socket.async_handshake(stream_base::server, [this, self](const boost::system::error_code error) {
         if (error) {
             Log::log_with_endpoint(in_endpoint, "SSL handshake failed: " + error.message(), Log::ERROR);
-            if (error.message() == "http request" && !plain_http_response.empty()) {
+            if (ERR_GET_REASON(error.value()) == SSL_R_HTTP_REQUEST && !plain_http_response.empty()) {
                 recv_len += plain_http_response.length();
                 boost::asio::async_write(accept_socket(), boost::asio::buffer(plain_http_response), [this, self](const boost::system::error_code, size_t) {
                     destroy();
@@ -70,7 +70,18 @@ void ServerSession::in_async_read() {
             destroy();
             return;
         }
-        in_recv(string((const char*)in_read_buf, length));
+        if (status == FORWARD) {
+            sent_len += length;
+            boost::asio::async_write(out_socket, boost::asio::buffer(in_read_buf, length), [this, self](const boost::system::error_code error, size_t) {
+                if (error) {
+                    destroy();
+                    return;
+                }
+                in_async_read();
+            });
+        } else {
+            in_recv(string((const char*)in_read_buf, length));
+        }
     });
 }
 
@@ -93,7 +104,18 @@ void ServerSession::out_async_read() {
             destroy();
             return;
         }
-        out_recv(string((const char*)out_read_buf, length));
+        if (status == FORWARD) {
+            recv_len += length;
+            boost::asio::async_write(in_socket, boost::asio::buffer(out_read_buf, length), [this, self](const boost::system::error_code error, size_t) {
+                if (error) {
+                    destroy();
+                    return;
+                }
+                out_async_read();
+            });
+        } else {
+            out_recv(string((const char*)out_read_buf, length));
+        }
     });
 }
 
@@ -268,7 +290,9 @@ void ServerSession::out_sent() {
 void ServerSession::udp_recv(const string &data, const udp::endpoint &endpoint) {
     if (status == UDP_FORWARD) {
         size_t length = data.length();
-        Log::log_with_endpoint(in_endpoint, "received a UDP packet of length " + to_string(length) + " bytes from " + endpoint.address().to_string() + ':' + to_string(endpoint.port()));
+        if (Log::level <= Log::ALL) {
+            Log::log_with_endpoint(in_endpoint, "received a UDP packet of length " + to_string(length) + " bytes from " + endpoint.address().to_string() + ':' + to_string(endpoint.port()));
+        }
         recv_len += length;
         in_async_write(UDPPacket::generate(endpoint, data));
     }
@@ -288,8 +312,10 @@ void ServerSession::udp_sent() {
             in_async_read();
             return;
         }
-        Log::log_with_endpoint(in_endpoint, "sent a UDP packet of length " + to_string(packet.length) + " bytes to " + packet.address.address + ':' + to_string(packet.address.port));
-        udp_data_buf = udp_data_buf.substr(packet_len);
+        if (Log::level <= Log::ALL) {
+            Log::log_with_endpoint(in_endpoint, "sent a UDP packet of length " + to_string(packet.length) + " bytes to " + packet.address.address + ':' + to_string(packet.address.port));
+        }
+        udp_data_buf.erase(0, packet_len);
         string query_addr = packet.address.address;
         auto self = shared_from_this();
         udp_resolver.async_resolve(query_addr, to_string(packet.address.port), [this, self, packet, query_addr](const boost::system::error_code error, const udp::resolver::results_type& results) {
@@ -349,10 +375,12 @@ void ServerSession::destroy() {
     }
     if (in_socket.next_layer().is_open()) {
         auto self = shared_from_this();
-        auto ssl_shutdown_cb = [this, self](const boost::system::error_code error) {
-            if (error == boost::asio::error::operation_aborted) {
+        auto shutdown_done = make_shared<bool>(false);
+        auto ssl_shutdown_cb = [this, self, shutdown_done](const boost::system::error_code error) {
+            if (error == boost::asio::error::operation_aborted || *shutdown_done) {
                 return;
             }
+            *shutdown_done = true;
             boost::system::error_code ec;
             ssl_shutdown_timer.cancel();
             in_socket.next_layer().cancel(ec);

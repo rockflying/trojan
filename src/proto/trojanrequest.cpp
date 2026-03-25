@@ -18,6 +18,7 @@
  */
 
 #include "trojanrequest.h"
+#include <stdexcept>
 using namespace std;
 
 int TrojanRequest::parse(const string &data) {
@@ -41,7 +42,13 @@ int TrojanRequest::parse(const string &data) {
 }
 
 string TrojanRequest::generate(const string &password, const string &domainname, uint16_t port, bool tcp) {
-    string ret = password + "\r\n";
+    if (domainname.length() > 255) {
+        throw runtime_error("domain name too long (max 255 bytes)");
+    }
+    string ret;
+    ret.reserve(password.length() + 2 + 1 + 1 + 1 + domainname.length() + 2 + 2);
+    ret += password;
+    ret += "\r\n";
     if (tcp) {
         ret += '\x01';
     } else {

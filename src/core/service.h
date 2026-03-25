@@ -20,7 +20,8 @@
 #ifndef _SERVICE_H_
 #define _SERVICE_H_
 
-#include <list>
+#include <memory>
+#include <unordered_map>
 #include <boost/version.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ssl.hpp>
@@ -34,13 +35,30 @@ private:
         MAX_LENGTH = 8192
     };
     const Config &config;
+    boost::asio::ssl::context ssl_context;
     boost::asio::io_context io_context;
     boost::asio::ip::tcp::acceptor socket_acceptor;
-    boost::asio::ssl::context ssl_context;
-    Authenticator *auth;
+    std::unique_ptr<Authenticator> auth;
     std::string plain_http_response;
     boost::asio::ip::udp::socket udp_socket;
-    std::list<std::weak_ptr<UDPForwardSession> > udp_sessions;
+    struct EndpointHash {
+        std::size_t operator()(const boost::asio::ip::udp::endpoint &ep) const {
+            auto addr = ep.address();
+            std::size_t h;
+            if (addr.is_v4()) {
+                auto bytes = addr.to_v4().to_bytes();
+                h = (std::size_t(bytes[0]) << 24) | (std::size_t(bytes[1]) << 16) |
+                    (std::size_t(bytes[2]) << 8)  |  std::size_t(bytes[3]);
+            } else {
+                auto bytes = addr.to_v6().to_bytes();
+                h = 0;
+                for (auto b : bytes) h = h * 131 + b;
+            }
+            h ^= std::hash<unsigned short>()(ep.port()) + 0x9e3779b9 + (h << 6) + (h >> 2);
+            return h;
+        }
+    };
+    std::unordered_map<boost::asio::ip::udp::endpoint, std::weak_ptr<UDPForwardSession>, EndpointHash> udp_sessions;
     uint8_t udp_read_buf[MAX_LENGTH]{};
     boost::asio::ip::udp::endpoint udp_recv_endpoint;
     void async_accept();

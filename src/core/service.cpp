@@ -46,9 +46,8 @@ typedef boost::asio::detail::socket_option::boolean<SOL_SOCKET, SO_REUSEPORT> re
 
 Service::Service(Config &config, bool test) :
     config(config),
-    socket_acceptor(io_context),
     ssl_context(context::sslv23),
-    auth(nullptr),
+    socket_acceptor(io_context),
     udp_socket(io_context) {
 #ifndef ENABLE_NAT
     if (config.run_type == Config::NAT) {
@@ -123,7 +122,7 @@ Service::Service(Config &config, bool test) :
         }
         if (config.mysql.enabled) {
 #ifdef ENABLE_MYSQL
-            auth = new Authenticator(config);
+            auth.reset(new Authenticator(config));
 #else // ENABLE_MYSQL
             Log::log_with_date_time("MySQL is not supported", Log::WARN);
 #endif // ENABLE_MYSQL
@@ -309,7 +308,7 @@ void Service::stop() {
 void Service::async_accept() {
     shared_ptr<Session>session(nullptr);
     if (config.run_type == Config::SERVER) {
-        session = make_shared<ServerSession>(config, io_context, ssl_context, auth, plain_http_response);
+        session = make_shared<ServerSession>(config, io_context, ssl_context, auth.get(), plain_http_response);
     } else if (config.run_type == Config::FORWARD) {
         session = make_shared<ForwardSession>(config, io_context, ssl_context);
     } else if (config.run_type == Config::NAT) {
@@ -345,16 +344,15 @@ void Service::udp_async_read() {
             throw runtime_error(error.message());
         }
         string data((const char *)udp_read_buf, length);
-        for (auto it = udp_sessions.begin(); it != udp_sessions.end();) {
-            auto next = ++it;
-            --it;
-            if (it->expired()) {
-                udp_sessions.erase(it);
-            } else if (it->lock()->process(udp_recv_endpoint, data)) {
+        auto it = udp_sessions.find(udp_recv_endpoint);
+        if (it != udp_sessions.end()) {
+            auto session = it->second.lock();
+            if (session) {
+                session->process(udp_recv_endpoint, data);
                 udp_async_read();
                 return;
             }
-            it = next;
+            udp_sessions.erase(it);
         }
         Log::log_with_endpoint(tcp::endpoint(udp_recv_endpoint.address(), udp_recv_endpoint.port()), "new UDP session");
         auto session = make_shared<UDPForwardSession>(config, io_context, ssl_context, udp_recv_endpoint, [this](const udp::endpoint &endpoint, const string &data) {
@@ -366,7 +364,7 @@ void Service::udp_async_read() {
                 throw runtime_error(ec.message());
             }
         });
-        udp_sessions.emplace_back(session);
+        udp_sessions.emplace(udp_recv_endpoint, session);
         session->start();
         session->process(udp_recv_endpoint, data);
         udp_async_read();
@@ -391,9 +389,4 @@ void Service::reload_cert() {
     }
 }
 
-Service::~Service() {
-    if (auth) {
-        delete auth;
-        auth = nullptr;
-    }
-}
+Service::~Service() = default;

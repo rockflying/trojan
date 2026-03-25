@@ -18,10 +18,9 @@
  */
 
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <boost/asio/signal_set.hpp>
-#include <boost/program_options.hpp>
-#include <boost/version.hpp>
 #include <openssl/opensslv.h>
 #ifdef ENABLE_MYSQL
 #include <mysql.h>
@@ -30,7 +29,6 @@
 #include "core/version.h"
 using namespace std;
 using namespace boost::asio;
-namespace po = boost::program_options;
 
 #ifndef DEFAULT_CONFIG
 #define DEFAULT_CONFIG "config.json"
@@ -64,30 +62,39 @@ void signal_async_wait(signal_set &sig, Service &service, bool &restart) {
 int main(int argc, const char *argv[]) {
     try {
         Log::log("Welcome to trojan " + Version::get_version(), Log::FATAL);
-        string config_file;
+        string config_file = DEFAULT_CONFIG;
         string log_file;
         string keylog_file;
-        bool test;
-        po::options_description desc("options");
-        desc.add_options()
-            ("config,c", po::value<string>(&config_file)->default_value(DEFAULT_CONFIG)->value_name("CONFIG"), "specify config file")
-            ("help,h", "print help message")
-            ("keylog,k", po::value<string>(&keylog_file)->value_name("KEYLOG"), "specify keylog file location (OpenSSL >= 1.1.1)")
-            ("log,l", po::value<string>(&log_file)->value_name("LOG"), "specify log file location")
-            ("test,t", po::bool_switch(&test), "test config file")
-            ("version,v", "print version and build info")
-        ;
-        po::positional_options_description pd;
-        pd.add("config", 1);
-        po::variables_map vm;
-        po::store(po::command_line_parser(argc, argv).options(desc).positional(pd).run(), vm);
-        po::notify(vm);
-        if (vm.count("help")) {
-            Log::log(string("usage: ") + argv[0] + " [-htv] [-l LOG] [-k KEYLOG] [[-c] CONFIG]", Log::FATAL);
-            cerr << desc;
-            exit(EXIT_SUCCESS);
+        bool test = false;
+        bool has_log = false;
+        bool has_keylog = false;
+        bool show_version = false;
+        for (int i = 1; i < argc; ++i) {
+            if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+                Log::log(string("usage: ") + argv[0] + " [-htv] [-l LOG] [-k KEYLOG] [[-c] CONFIG]", Log::FATAL);
+                cerr << "options:" << endl;
+                cerr << "  -c [ --config ] CONFIG  specify config file" << endl;
+                cerr << "  -h [ --help ]           print help message" << endl;
+                cerr << "  -k [ --keylog ] KEYLOG  specify keylog file location (OpenSSL >= 1.1.1)" << endl;
+                cerr << "  -l [ --log ] LOG        specify log file location" << endl;
+                cerr << "  -t [ --test ]           test config file" << endl;
+                cerr << "  -v [ --version ]        print version and build info" << endl;
+                exit(EXIT_SUCCESS);
+            } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
+                show_version = true;
+            } else if (strcmp(argv[i], "-t") == 0 || strcmp(argv[i], "--test") == 0) {
+                test = true;
+            } else if (strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--config") == 0) {
+                if (++i < argc) config_file = argv[i];
+            } else if (strcmp(argv[i], "-l") == 0 || strcmp(argv[i], "--log") == 0) {
+                if (++i < argc) { log_file = argv[i]; has_log = true; }
+            } else if (strcmp(argv[i], "-k") == 0 || strcmp(argv[i], "--keylog") == 0) {
+                if (++i < argc) { keylog_file = argv[i]; has_keylog = true; }
+            } else if (argv[i][0] != '-') {
+                config_file = argv[i];
+            }
         }
-        if (vm.count("version")) {
+        if (show_version) {
             Log::log(string("Boost ") + BOOST_LIB_VERSION + ", " + OpenSSL_version(OPENSSL_VERSION), Log::FATAL);
 #ifdef ENABLE_MYSQL
             Log::log(string(" [Enabled] MySQL Support (") + mysql_get_client_info() + ')', Log::FATAL);
@@ -131,10 +138,10 @@ int main(int argc, const char *argv[]) {
             Log::log(string("\tBuild Flags: ") + OpenSSL_version(OPENSSL_CFLAGS), Log::FATAL);
             exit(EXIT_SUCCESS);
         }
-        if (vm.count("log")) {
+        if (has_log) {
             Log::redirect(log_file);
         }
-        if (vm.count("keylog")) {
+        if (has_keylog) {
             Log::redirect_keylog(keylog_file);
         }
         bool restart;

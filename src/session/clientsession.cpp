@@ -67,7 +67,18 @@ void ClientSession::in_async_read() {
             destroy();
             return;
         }
-        in_recv(string((const char*)in_read_buf, length));
+        if (status == FORWARD) {
+            sent_len += length;
+            boost::asio::async_write(out_socket, boost::asio::buffer(in_read_buf, length), [this, self](const boost::system::error_code error, size_t) {
+                if (error) {
+                    destroy();
+                    return;
+                }
+                in_async_read();
+            });
+        } else {
+            in_recv(string((const char*)in_read_buf, length));
+        }
     });
 }
 
@@ -90,7 +101,18 @@ void ClientSession::out_async_read() {
             destroy();
             return;
         }
-        out_recv(string((const char*)out_read_buf, length));
+        if (status == FORWARD) {
+            recv_len += length;
+            boost::asio::async_write(in_socket, boost::asio::buffer(out_read_buf, length), [this, self](const boost::system::error_code error, size_t) {
+                if (error) {
+                    destroy();
+                    return;
+                }
+                out_async_read();
+            });
+        } else {
+            out_recv(string((const char*)out_read_buf, length));
+        }
     });
 }
 
@@ -159,6 +181,11 @@ void ClientSession::in_recv(const string &data) {
         case REQUEST: {
             if (data.length() < 7 || data[0] != 5 || data[2] != 0) {
                 Log::log_with_endpoint(in_endpoint, "bad request", Log::ERROR);
+                destroy();
+                return;
+            }
+            if (config.password.empty()) {
+                Log::log_with_endpoint(in_endpoint, "no password configured", Log::ERROR);
                 destroy();
                 return;
             }
@@ -337,7 +364,9 @@ void ClientSession::udp_recv(const string &data, const udp::endpoint&) {
         return;
     }
     size_t length = data.length() - 3 - address_len;
-    Log::log_with_endpoint(in_endpoint, "sent a UDP packet of length " + to_string(length) + " bytes to " + address.address + ':' + to_string(address.port));
+    if (Log::level <= Log::ALL) {
+        Log::log_with_endpoint(in_endpoint, "sent a UDP packet of length " + to_string(length) + " bytes to " + address.address + ':' + to_string(address.port));
+    }
     string packet = data.substr(3, address_len) + char(uint8_t(length >> 8)) + char(uint8_t(length & 0xFF)) + "\r\n" + data.substr(address_len + 3);
     sent_len += length;
     if (status == CONNECT) {
@@ -362,7 +391,9 @@ void ClientSession::udp_sent() {
             out_async_read();
             return;
         }
-        Log::log_with_endpoint(in_endpoint, "received a UDP packet of length " + to_string(packet.length) + " bytes from " + packet.address.address + ':' + to_string(packet.address.port));
+        if (Log::level <= Log::ALL) {
+            Log::log_with_endpoint(in_endpoint, "received a UDP packet of length " + to_string(packet.length) + " bytes from " + packet.address.address + ':' + to_string(packet.address.port));
+        }
         SOCKS5Address address;
         size_t address_len;
         bool is_addr_valid = address.parse(udp_data_buf, address_len);
@@ -372,7 +403,7 @@ void ClientSession::udp_sent() {
             return;
         }
         string reply = string("\x00\x00\x00", 3) + udp_data_buf.substr(0, address_len) + packet.payload;
-        udp_data_buf = udp_data_buf.substr(packet_len);
+        udp_data_buf.erase(0, packet_len);
         recv_len += packet.length;
         udp_async_write(reply, udp_recv_endpoint);
     }
@@ -397,10 +428,12 @@ void ClientSession::destroy() {
     }
     if (out_socket.next_layer().is_open()) {
         auto self = shared_from_this();
-        auto ssl_shutdown_cb = [this, self](const boost::system::error_code error) {
-            if (error == boost::asio::error::operation_aborted) {
+        auto shutdown_done = make_shared<bool>(false);
+        auto ssl_shutdown_cb = [this, self, shutdown_done](const boost::system::error_code error) {
+            if (error == boost::asio::error::operation_aborted || *shutdown_done) {
                 return;
             }
+            *shutdown_done = true;
             boost::system::error_code ec;
             ssl_shutdown_timer.cancel();
             out_socket.next_layer().cancel(ec);

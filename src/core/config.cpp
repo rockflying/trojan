@@ -66,7 +66,11 @@ void Config::populate(const ptree &tree) {
         }
     }
     udp_timeout = tree.get("udp_timeout", 60);
-    log_level = static_cast<Log::Level>(tree.get("log_level", 1));
+    int log_level_int = tree.get("log_level", 1);
+    if (log_level_int < 0 || log_level_int > Log::OFF) {
+        throw runtime_error("invalid log_level in config file");
+    }
+    log_level = static_cast<Log::Level>(log_level_int);
     ssl.verify = tree.get("ssl.verify", true);
     ssl.verify_hostname = tree.get("ssl.verify_hostname", true);
     ssl.cert = tree.get("ssl.cert", string());
@@ -102,6 +106,9 @@ void Config::populate(const ptree &tree) {
     tcp.reuse_port = tree.get("tcp.reuse_port", false);
     tcp.fast_open = tree.get("tcp.fast_open", false);
     tcp.fast_open_qlen = tree.get("tcp.fast_open_qlen", 20);
+    if (run_type != SERVER && password.empty()) {
+        throw runtime_error("no password specified in config");
+    }
     mysql.enabled = tree.get("mysql.enabled", false);
     mysql.server_addr = tree.get("mysql.server_addr", string("127.0.0.1"));
     mysql.server_port = tree.get("mysql.server_port", uint16_t(3306));
@@ -113,6 +120,14 @@ void Config::populate(const ptree &tree) {
     mysql.ca = tree.get("mysql.ca", string());
 }
 
+static string safe_getenv(const char *name) {
+    const char *val = getenv(name);
+    if (val == nullptr) {
+        throw runtime_error(string("missing environment variable: ") + name);
+    }
+    return val;
+}
+
 bool Config::sip003() {
     char *JSON = getenv("SS_PLUGIN_OPTIONS");
     if (JSON == nullptr) {
@@ -121,17 +136,17 @@ bool Config::sip003() {
     populate(JSON);
     switch (run_type) {
         case SERVER:
-            local_addr = getenv("SS_REMOTE_HOST");
-            local_port = atoi(getenv("SS_REMOTE_PORT"));
+            local_addr = safe_getenv("SS_REMOTE_HOST");
+            local_port = atoi(safe_getenv("SS_REMOTE_PORT").c_str());
             break;
         case CLIENT:
         case NAT:
             throw runtime_error("SIP003 with wrong run_type");
         case FORWARD:
-            remote_addr = getenv("SS_REMOTE_HOST");
-            remote_port = atoi(getenv("SS_REMOTE_PORT"));
-            local_addr = getenv("SS_LOCAL_HOST");
-            local_port = atoi(getenv("SS_LOCAL_PORT"));
+            remote_addr = safe_getenv("SS_REMOTE_HOST");
+            remote_port = atoi(safe_getenv("SS_REMOTE_PORT").c_str());
+            local_addr = safe_getenv("SS_LOCAL_HOST");
+            local_port = atoi(safe_getenv("SS_LOCAL_PORT").c_str());
             break;
     }
     return true;
